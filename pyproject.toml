@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zombiepapers"
+dynamic = ["version"]
+description = "Check your bibliography for retracted and corrected papers, and find out what is wrong with them."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "duckdb",
+    "httpx",
+    "bibtexparser>=1.4,<2",
+    "typer",
+    "rich",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/emaduracell/zombiepapers"
+
+[project.scripts]
+zombiepapers = "zombiepapers.cli:app"
+
+[tool.hatch.version]
+path = "src/zombiepapers/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zombiepapers"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
