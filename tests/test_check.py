@@ -4,6 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from fake_openalex import KEY, FakeOpenAlex, oa_work
 from zombiepapers import check, db
 from zombiepapers.models import Finding, Notice, Work
 from zombiepapers.sources import openalex
@@ -152,3 +153,115 @@ def test_retraction_notice_is_not_flagged(rw_db) -> None:
     findings, _, _ = check.check_works(rw_db, {"n": notice})
     assert findings[0].status == "retraction_notice" and not findings[0].flagged
     assert findings[0].assessments == ()
+
+
+# --- depth 1: references of the checked works --------------------------------------------
+
+
+def citing_fake() -> FakeOpenAlex:
+    """W1 (2023) cites: a paper retracted in 2021 (W10), a fine paper (W11), a paper without
+    DOI/PMID (W12), one only OpenAlex marks retracted (W13), one with an expression of concern
+    from 2024 (W14, by PMID), and one OpenAlex doesn't know (W15)."""
+    return FakeOpenAlex([
+        oa_work(1, "10.5000/citing", "The citing paper", year=2023, cites=(10, 11, 12, 13, 14, 15)),
+        oa_work(10, "10.1000/abc.1", "Paper A, with a comma", year=2019),
+        oa_work(11, "10.9999/fine", "Nothing wrong here"),
+        oa_work(12, None, "A book"),
+        oa_work(13, "10.7777/oa", "Retracted per OpenAlex", retracted=True),
+        oa_work(14, None, "Paper B", pmid="555"),
+    ])
+
+
+@pytest.fixture
+def online(monkeypatch):
+    monkeypatch.setenv(openalex.API_KEY_ENV, KEY)
+
+
+def _check_citing(rw_db, fake: FakeOpenAlex):
+    return check.check_works(rw_db, {"citing": Work(doi="10.5000/citing")}, fake.client(), depth=1)
+
+
+def test_depth_reports_flagged_references_with_timing(rw_db, online) -> None:
+    findings, warnings, problem = _check_citing(rw_db, citing_fake())
+    (f,) = findings
+    assert warnings == [] and problem is None
+    assert [(r.finding.bib_key, r.finding.status, r.timing) for r in f.flagged_references] == [
+        ("doi:10.1000/abc.1", "retracted", "after"),  # cited 2023, retracted 2021: zombie
+        ("doi:10.7777/oa", "openalex_retracted", "unknown"),  # no dated notice
+        ("pmid:555", "expression_of_concern", "before"),  # cited 2023, concern 2024
+    ]
+    assert f.flagged_references[0].finding.main_assessment.tier == "integrity"
+    assert (f.references_checked, f.references_skipped) == (4, 2)  # W12 no DOI, W15 unknown
+
+
+def test_flagged_references_do_not_change_exit_code(rw_db, online) -> None:
+    findings, _, problem = _check_citing(rw_db, citing_fake())
+    assert findings[0].status == "ok" and not findings[0].flagged
+    assert check.exit_code(findings, problem) == check.EXIT_OK
+
+
+def test_depth_stores_citations(rw_db, online) -> None:
+    _check_citing(rw_db, citing_fake())
+    rows = rw_db.execute("SELECT * FROM citations ORDER BY ALL").fetchall()
+    assert rows == [
+        ("doi:10.5000/citing", "doi:10.1000/abc.1", "openalex"),
+        ("doi:10.5000/citing", "doi:10.7777/oa", "openalex"),
+        ("doi:10.5000/citing", "doi:10.9999/fine", "openalex"),
+        ("doi:10.5000/citing", "pmid:555", "openalex"),
+    ]
+    # The SQL question the table exists for: who cites a paper with a retraction notice?
+    zombies = rw_db.execute("""
+        SELECT c.citing_work_id, c.cited_work_id FROM citations c
+        JOIN notice_targets t ON t.work_id = c.cited_work_id
+        JOIN notices n ON n.notice_id = t.notice_id
+        WHERE n.nature = 'Retraction'
+    """).fetchall()
+    assert zombies == [("doi:10.5000/citing", "doi:10.1000/abc.1")]
+
+
+def test_depth_second_run_is_cached_and_idempotent(rw_db, online) -> None:
+    fake = citing_fake()
+    first = _check_citing(rw_db, fake)
+    calls = len(fake.requests)
+    assert calls == 2  # one free DOI lookup + one batch for all six references
+    assert _check_citing(rw_db, fake) == first
+    assert len(fake.requests) == calls
+    assert rw_db.execute("SELECT count(*) FROM citations").fetchall() == [(4,)]
+
+
+def test_store_citations_replaces_a_works_reference_list(rw_db) -> None:
+    check._store_citations(rw_db, {"doi:a": ["doi:x", "doi:y"], "doi:b": ["doi:x"]})
+    check._store_citations(rw_db, {"doi:a": ["doi:z"]})
+    assert rw_db.execute("SELECT citing_work_id, cited_work_id FROM citations ORDER BY ALL").fetchall() == [
+        ("doi:a", "doi:z"), ("doi:b", "doi:x"),
+    ]
+
+
+def test_depth_needs_a_key(rw_db, monkeypatch) -> None:
+    monkeypatch.delenv(openalex.API_KEY_ENV, raising=False)
+    with pytest.raises(check.CheckError, match=openalex.API_KEY_ENV):
+        check.check_works(rw_db, {"x": Work(doi="10.1/x")}, openalex.make_client(), depth=1)
+
+
+def test_depth_beyond_one_is_refused(rw_db) -> None:
+    with pytest.raises(ValueError):
+        check.check_works(rw_db, {}, depth=2)
+
+
+def test_depth_skips_references_when_openalex_fails(rw_db, online, monkeypatch) -> None:
+    monkeypatch.setattr(openalex.time, "sleep", lambda s: None)
+    fake = citing_fake()
+    fake.fail_next = [500] * openalex.MAX_ATTEMPTS
+    findings, warnings, problem = _check_citing(rw_db, fake)
+    assert problem == openalex.TRANSIENT and len(warnings) == 1
+    assert findings[0].references_checked is None
+
+
+@pytest.mark.parametrize(
+    "citing_year, notice_year, expected",
+    [(2023, 2021, "after"), (2019, 2021, "before"), (2021, 2021, "unknown"), (None, 2021, "unknown")],
+)
+def test_citation_timing(citing_year, notice_year, expected) -> None:
+    notice = Notice("n", "Retraction", date(notice_year, 5, 1))
+    ref = Finding("r", Work(doi="10.1/r"), "retracted", notices=(notice,))
+    assert check.citation_timing(Work(year=citing_year), ref) == expected

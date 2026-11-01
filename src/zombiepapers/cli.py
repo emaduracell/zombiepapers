@@ -159,19 +159,28 @@ def resolve(
         typer.echo(f"{key:<24} {via:<13} {str(work.work_id):<45} {work.openalex_id or '':<12} {retracted}")
 
 
+# Shared by check and check-doi.
+_DEPTH_OPTION = typer.Option(
+    0, "--depth", min=0, max=check.MAX_DEPTH,
+    help="1 = also check the papers each entry cites (needs OPENALEX_API_KEY).",
+)
+
+
 @app.command("check")
 def check_command(
     bib_path: Path = typer.Argument(..., exists=True, dir_okay=False, help=".bib file."),
     as_json: bool = typer.Option(False, "--json", help="Print JSON instead of a table."),
     db_path: Path = typer.Option(db.DEFAULT_DB_PATH, "--db", help="Database file."),
+    depth: int = _DEPTH_OPTION,
 ) -> None:
     """Check a bibliography.
 
     Exit codes: 0 nothing flagged; 1 flagged papers; 2 wrong usage;
     75 incomplete, retry later (OpenAlex temporarily unavailable);
-    78 fix something first (no data ingested, OpenAlex refused the request).
+    78 fix something first (no data ingested, OpenAlex refused the request,
+    --depth without an OpenAlex key). Flagged references never change the exit code.
     """
-    _run_check(parse_bib(bib_path), as_json, db_path)
+    _run_check(parse_bib(bib_path), as_json, db_path, depth)
 
 
 @app.command("check-doi")
@@ -181,6 +190,7 @@ def check_doi_command(
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON instead of a table."),
     db_path: Path = typer.Option(db.DEFAULT_DB_PATH, "--db", help="Database file."),
+    depth: int = _DEPTH_OPTION,
 ) -> None:
     """Check one or more DOIs. Same report and exit codes as `check`."""
     works = {}
@@ -190,15 +200,15 @@ def check_doi_command(
             typer.echo(f"error: not a DOI: {raw!r} (a DOI starts with '10.')", err=True)
             raise typer.Exit(2)
         works[doi] = Work(doi=doi)
-    _run_check(works, as_json, db_path)
+    _run_check(works, as_json, db_path, depth)
 
 
-def _run_check(works: dict[str, Work], as_json: bool, db_path: Path) -> None:
+def _run_check(works: dict[str, Work], as_json: bool, db_path: Path, depth: int = 0) -> None:
     """Shared by check and check-doi: run the check, render it, exit with its code."""
     con = db.connect(db_path)
     try:
         with openalex.make_client() as http:
-            findings, warnings, problem = check.check_works(con, works, http)
+            findings, warnings, problem = check.check_works(con, works, http, depth=depth)
     except check.CheckError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(check.EXIT_CONFIG)

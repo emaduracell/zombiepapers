@@ -6,7 +6,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from zombiepapers.models import Finding
+from zombiepapers.models import FlaggedReference, Finding
 
 # status -> (label, style), in the order rows and the summary are shown.
 STATUS_LABELS = {
@@ -21,6 +21,11 @@ STATUS_LABELS = {
 }
 _ORDER = list(STATUS_LABELS)
 _NOT_IN_TABLE = ("retraction_notice", "ok", "unresolved")  # nothing wrong to explain
+TIMING_LABELS = {
+    "after": ("after the notice", "bold red"),  # a zombie citation
+    "before": ("before the notice", "green"),  # the authors could not know
+    "unknown": ("unclear", "dim"),
+}
 
 
 def render(findings: list[Finding], warnings: list[str], console: Console) -> None:
@@ -42,7 +47,53 @@ def render(findings: list[Finding], warnings: list[str], console: Console) -> No
     unresolved = [f.bib_key for f in findings if f.status == "unresolved"]
     if unresolved:
         console.print(f"[dim]Not checked (no DOI or PubMed ID found): {', '.join(unresolved)}[/]")
+    if any(f.references_checked is not None for f in findings):
+        _render_references(findings, console)
     console.print(_summary(findings))
+
+
+def _render_references(findings: list[Finding], console: Console) -> None:
+    """--depth 1: flagged papers cited by the entries. Never affects the exit code."""
+    rows = [(f.bib_key, r) for f in findings for r in f.flagged_references]
+    if rows:
+        console.print(_references_table(rows))
+    checked = [f for f in findings if f.references_checked is not None]
+    total = sum(f.references_checked for f in checked)
+    skipped = sum(f.references_skipped for f in checked)
+    line = f"References: {total} checked for {len(checked)} of {len(findings)} entries"
+    if skipped:
+        line += f"; {skipped} skipped (no DOI or PubMed ID)"
+    missing = len(findings) - len(checked)
+    if missing:
+        line += f"; {missing} entries without a reference list (not found in OpenAlex)"
+    console.print(f"[dim]{line}.[/]")
+
+
+def _references_table(rows: list[tuple[str, FlaggedReference]]) -> Table:
+    table = Table(title="Flagged papers cited by your entries", show_lines=True)
+    table.add_column("Entry", no_wrap=True)
+    table.add_column("Cites")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Cited", no_wrap=True)
+    table.add_column("What is wrong")
+    table.add_column("Notice", overflow="fold")
+    for bib_key, ref in rows:
+        f = ref.finding
+        label, style = STATUS_LABELS[f.status]
+        timing, timing_style = TIMING_LABELS[ref.timing]
+        notice = f.main_notice
+        cites = Text(f.work.title or "")
+        cites.append(("\n" if f.work.title else "") + f.bib_key, style="dim")
+        date = f" ({notice.notice_date})" if notice and notice.notice_date else ""
+        table.add_row(
+            bib_key,
+            cites,
+            Text(label + date, style=style),
+            Text(timing, style=timing_style),
+            f.main_assessment.headline if f.main_assessment else "",
+            (notice.link if notice else None) or "",
+        )
+    return table
 
 
 def _table(findings: list[Finding]) -> Table:
@@ -80,4 +131,9 @@ def _what_is_wrong(f: Finding) -> Text:
 def _summary(findings: list[Finding]) -> str:
     counts = Counter(f.status for f in findings)
     parts = [f"{counts[s]} {STATUS_LABELS[s][0].lower()}" for s in _ORDER if counts[s]]
-    return f"{len(findings)} entries: " + ", ".join(parts)
+    summary = f"{len(findings)} entries: " + ", ".join(parts)
+    refs = [r for f in findings for r in f.flagged_references]
+    if refs:
+        after = sum(r.timing == "after" for r in refs)
+        summary += f"; {len(refs)} flagged references ({after} cited after the notice)"
+    return summary

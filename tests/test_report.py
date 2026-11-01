@@ -3,8 +3,10 @@ from pathlib import Path
 
 from rich.console import Console
 
+from fake_openalex import KEY, FakeOpenAlex, oa_work
 from zombiepapers import check
 from zombiepapers.models import Work
+from zombiepapers.sources import openalex
 from zombiepapers.report import json_report, terminal
 
 BIB = Path(__file__).parent / "fixtures" / "check.bib"
@@ -58,3 +60,32 @@ def test_terminal_lists_retraction_notices_outside_the_table(rw_db) -> None:
     assert "No retracted, corrected or flagged papers among 1 entries." in out
     assert "Retraction notices (citing them is fine): cited_notice" in out
     assert out.strip().endswith("1 entries: 1 retraction notice")
+
+
+def _depth_findings(rw_db, monkeypatch):
+    monkeypatch.setenv(openalex.API_KEY_ENV, KEY)
+    fake = FakeOpenAlex([
+        oa_work(1, "10.5000/citing", "The citing paper", year=2023, cites=(10, 11, 12)),
+        oa_work(10, "10.1000/abc.1", "Paper A, with a comma"),
+        oa_work(11, "10.9999/fine", "Nothing wrong here"),
+        oa_work(12, None, "A book"),
+    ])
+    return check.check_works(rw_db, {"citing": Work(doi="10.5000/citing")}, fake.client(), depth=1)[0]
+
+
+def test_terminal_shows_flagged_references(rw_db, monkeypatch) -> None:
+    out = _render(_depth_findings(rw_db, monkeypatch), [])
+    assert "Flagged papers cited by your entries" in out
+    assert "Paper A, with a comma" in out and "after the notice" in out
+    assert "References: 2 checked for 1 of 1 entries; 1 skipped (no DOI or PubMed ID)." in out
+    assert out.strip().endswith("1 entries: 1 ok; 1 flagged references (1 cited after the notice)")
+
+
+def test_json_shows_flagged_references(rw_db, monkeypatch) -> None:
+    data = json.loads(json_report.to_json(_depth_findings(rw_db, monkeypatch), []))
+    assert data["flagged"] == 0 and data["flagged_references"] == 1
+    (f,) = data["findings"]
+    assert (f["references_checked"], f["references_skipped"]) == (2, 1)
+    assert f["flagged_references"][0]["timing"] == "after"
+    assert f["flagged_references"][0]["status"] == "retracted"
+    assert "referenced_works" not in f["work"]

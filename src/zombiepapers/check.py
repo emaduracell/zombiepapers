@@ -1,5 +1,11 @@
-"""Checking a bibliography: .bib -> OpenAlex -> notices in the database -> Findings."""
+"""Checking a bibliography: .bib -> OpenAlex -> notices in the database -> Findings.
 
+With depth=1, also the reference lists of the checked works (from OpenAlex): references
+that are flagged themselves are attached to the Finding of the work that cites them, and
+"who cites whom" is stored in the `citations` table.
+"""
+
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -9,7 +15,7 @@ import httpx
 from zombiepapers.explain import taxonomy
 from zombiepapers.explain.base import Explainer
 from zombiepapers.explain.rules import RuleExplainer
-from zombiepapers.models import Finding, Notice, Work
+from zombiepapers.models import FlaggedReference, Finding, Notice, Work
 from zombiepapers.resolve.bib import parse_bib
 from zombiepapers.sources import openalex
 
@@ -20,9 +26,12 @@ EXIT_FLAGGED = 1  # checked, something flagged (wins: retrying won't un-retract 
 EXIT_TEMPFAIL = 75  # EX_TEMPFAIL, like 5xx: result incomplete, retrying later may change it
 EXIT_CONFIG = 78  # EX_CONFIG, like 4xx: something must be fixed first, retrying won't help
 
+MAX_DEPTH = 1  # depth 2 would be ~40x the API calls of depth 1
+
 
 class CheckError(Exception):
-    """The database is not ready for checking (nothing ingested yet). Exit code 78."""
+    """Something must be fixed before checking (nothing ingested yet, --depth without an
+    OpenAlex key). Exit code 78."""
 
 
 def check(
@@ -30,9 +39,10 @@ def check(
     bib_path: Path,
     http: httpx.Client | None = None,
     explainer: Explainer | None = None,
+    depth: int = 0,
 ) -> tuple[list[Finding], list[str], str | None]:
     """Check every entry of a .bib. See check_works."""
-    return check_works(con, parse_bib(bib_path), http, explainer)
+    return check_works(con, parse_bib(bib_path), http, explainer, depth)
 
 
 def check_works(
@@ -40,6 +50,7 @@ def check_works(
     works: dict[str, Work],
     http: httpx.Client | None = None,
     explainer: Explainer | None = None,
+    depth: int = 0,
 ) -> tuple[list[Finding], list[str], str | None]:
     """Check works given as {key: Work}: a parsed .bib, or DOIs typed by the user.
 
@@ -47,8 +58,16 @@ def check_works(
     With `http`, works are completed by OpenAlex first. If OpenAlex fails, the check
     still runs on what was given, with a warning; the problem is the failure's kind
     ('offline' | 'permanent' | 'transient', see OpenAlexError), else None.
+    With depth=1, the references of each work are checked too (needs OpenAlex).
     """
+    if not 0 <= depth <= MAX_DEPTH:
+        raise ValueError(f"depth must be between 0 and {MAX_DEPTH}")
     _require_data(con)
+    if depth and (http is None or not openalex.has_key()):
+        raise CheckError(
+            f"--depth needs OpenAlex for the reference lists: set {openalex.API_KEY_ENV} "
+            "(free key at https://openalex.org)."
+        )
     if con.execute("SELECT count(*) FROM reason_taxonomy").fetchall()[0][0] == 0:
         taxonomy.load_taxonomy(con)
     explainer = explainer or RuleExplainer(con)
@@ -66,17 +85,102 @@ def check_works(
             problem = e.kind
 
     notices = _notices_by_key(con, works)
-    findings = []
-    for key, work in works.items():
-        found = notices.get(key, ())
-        findings.append(Finding(
-            bib_key=key,
-            work=work,
-            status=status(work, found),
-            notices=found,
-            assessments=tuple(explainer.explain(work, found)),
-        ))
+    findings = [_finding(key, work, notices.get(key, ()), explainer) for key, work in works.items()]
+
+    if depth and problem is None:
+        try:
+            findings = _with_references(con, http, findings, explainer)
+        except openalex.OpenAlexError as e:
+            warnings.append(f"References not checked ({e}).")
+            problem = e.kind
     return findings, warnings, problem
+
+
+def _finding(key: str, work: Work, notices: tuple[Notice, ...], explainer: Explainer) -> Finding:
+    return Finding(
+        bib_key=key,
+        work=work,
+        status=status(work, notices),
+        notices=notices,
+        assessments=tuple(explainer.explain(work, notices)),
+    )
+
+
+def _with_references(
+    con: duckdb.DuckDBPyConnection,
+    http: httpx.Client,
+    findings: list[Finding],
+    explainer: Explainer,
+) -> list[Finding]:
+    """Check the reference list of every finding whose work OpenAlex knows (by DOI/PMID).
+
+    One batch lookup for all references of the whole bibliography, one notices query,
+    and one transaction to refresh their rows in `citations`.
+    """
+    citing = [f for f in findings if f.work.openalex_id and f.work.work_id]
+    ref_works = openalex.lookup_openalex_ids(con, http, [r for f in citing for r in f.work.referenced_works])
+    # {citing bib key: work_ids of its references}. References without DOI/PMID are dropped.
+    cited_ids = {
+        f.bib_key: list(dict.fromkeys(
+            ref_works[r].work_id for r in f.work.referenced_works if r in ref_works and ref_works[r].work_id
+        ))
+        for f in citing
+    }
+    # Keyed by work_id, so a paper cited by several entries is checked once.
+    checkable = {w.work_id: w for w in ref_works.values() if w.work_id}
+    ref_notices = _notices_by_key(con, checkable)
+    ref_findings = {
+        work_id: _finding(work_id, work, ref_notices.get(work_id, ()), explainer)
+        for work_id, work in checkable.items()
+    }
+    _store_citations(con, {f.work.work_id: cited_ids[f.bib_key] for f in citing})
+
+    result = []
+    for f in findings:
+        if f.bib_key not in cited_ids:
+            result.append(f)  # not in OpenAlex, or no DOI/PMID: references unknown
+            continue
+        flagged = [ref_findings[i] for i in cited_ids[f.bib_key] if ref_findings[i].flagged]
+        result.append(replace(
+            f,
+            flagged_references=tuple(FlaggedReference(r, citation_timing(f.work, r)) for r in flagged),
+            references_checked=len(cited_ids[f.bib_key]),
+            references_skipped=len(f.work.referenced_works) - len(cited_ids[f.bib_key]),
+        ))
+    return result
+
+
+def _store_citations(con: duckdb.DuckDBPyConnection, cited_by: dict[str, list[str]]) -> None:
+    """Refresh each citing work's rows: delete, re-insert, all in one transaction."""
+    rows = list(dict.fromkeys((citing, cited) for citing, cited_ids in cited_by.items() for cited in cited_ids))
+    con.begin()
+    try:
+        con.execute(
+            "DELETE FROM citations WHERE source = 'openalex' AND citing_work_id IN (SELECT unnest($1))",
+            [list(cited_by)],
+        )
+        if rows:
+            con.executemany("INSERT INTO citations VALUES (?, ?, 'openalex')", rows)
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+
+
+def citation_timing(citing: Work, reference: Finding) -> str:
+    """'after' | 'before' | 'unknown': was the reference cited after its notice?
+
+    Only years are compared (we know the citing work's year, not its exact date), so
+    the same year is 'unknown'.
+    """
+    notice = reference.main_notice
+    if citing.year is None or notice is None or notice.notice_date is None:
+        return "unknown"
+    if citing.year > notice.notice_date.year:
+        return "after"
+    if citing.year < notice.notice_date.year:
+        return "before"
+    return "unknown"
 
 
 def exit_code(findings: list[Finding], openalex_problem: str | None) -> int:

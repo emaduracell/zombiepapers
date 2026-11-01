@@ -22,6 +22,7 @@ class Work:
     # OpenAlex type 'retraction': this is a retraction *notice*, not a research paper.
     # Citing a notice is fine; OpenAlex often sets is_retracted on notices too.
     is_retraction_notice: bool = False
+    referenced_works: tuple[str, ...] = ()  # OpenAlex IDs ('W123') of the works it cites
 
     @property
     def work_id(self) -> str | None:
@@ -76,6 +77,11 @@ class Finding:
     status: str
     notices: tuple[Notice, ...] = ()  # newest first
     assessments: tuple[Assessment, ...] = ()  # one per notice, same order
+    # With --depth 1: the references *this* work cites that are themselves flagged.
+    # They never change `flagged` or the exit code: they are a weaker, second-level signal.
+    flagged_references: tuple["FlaggedReference", ...] = ()
+    references_checked: int | None = None  # None = references not checked
+    references_skipped: int = 0  # references without DOI or PMID: cannot be checked
 
     @property
     def flagged(self) -> bool:
@@ -92,6 +98,17 @@ class Finding:
         main = self.main_notice
         wanted = main.notice_id if main else None
         return next((a for a in self.assessments if a.notice_id == wanted), None)
+
+
+@dataclass(frozen=True)
+class FlaggedReference:
+    """A flagged paper found in the reference list of a checked work."""
+
+    finding: Finding  # the reference, checked like a .bib entry (bib_key = its work_id)
+    # Was it cited after the notice? Compares the citing work's year with the notice's year:
+    # 'after' (a zombie citation) | 'before' (the authors could not know) |
+    # 'unknown' (same year, missing year, or no dated notice, e.g. OpenAlex flag only).
+    timing: str
 
 
 _STATUS_NATURE = {

@@ -5,6 +5,7 @@ from zombiepapers import db
 CORE_TABLES = {"works", "notices", "notice_targets", "notice_reasons", "reason_taxonomy"}
 ALL_MIGRATIONS = [
     "001_core.sql", "002_source_snapshots.sql", "003_raw_retraction_watch.sql", "004_api_cache.sql",
+    "005_citations.sql",
 ]
 
 

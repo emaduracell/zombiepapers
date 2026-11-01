@@ -5,9 +5,9 @@ repeated run makes no network calls and needs no key. The key is read from the
 OPENALEX_API_KEY environment variable only when a request is actually sent.
 
 Cost: single-record lookups (/works/doi:..., /works/pmid:...) are free; filter and
-search calls are billed. DOIs are looked up 100 at a time with one filter call (a lone
-DOI with a free single lookup), and each DOI's result is cached separately, so a
-changed .bib only fetches the new DOIs.
+search calls are billed. DOIs (and OpenAlex IDs, for reference lists) are looked up 100
+at a time with one filter call (a lone one with a free single lookup), and each result is
+cached separately, so a changed .bib only fetches what is new.
 """
 
 import json
@@ -15,6 +15,7 @@ import os
 import re
 import time
 from dataclasses import replace
+from collections.abc import Callable
 from typing import Any
 
 import duckdb
@@ -31,7 +32,8 @@ MAX_ATTEMPTS = 5
 # Like HTTP itself: 429 and 5xx are temporary (retry), any other 4xx is permanent.
 OFFLINE, PERMANENT, TRANSIENT = "offline", "permanent", "transient"
 # Only the fields we use: smaller responses and a smaller cache.
-SELECT = "id,doi,ids,title,display_name,publication_year,primary_location,is_retracted,type"
+SELECT = ("id,doi,ids,title,display_name,publication_year,primary_location,is_retracted,type,"
+          "referenced_works")
 
 
 class OpenAlexError(Exception):
@@ -46,6 +48,11 @@ class OpenAlexError(Exception):
     def __init__(self, message: str, kind: str) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+def has_key() -> bool:
+    """Whether an API key is set (without reading it into anything that could be printed)."""
+    return bool(os.environ.get(API_KEY_ENV))
 
 
 def make_client() -> httpx.Client:
@@ -85,35 +92,68 @@ def lookup_dois(
     con: duckdb.DuckDBPyConnection, http: httpx.Client, dois: list[str]
 ) -> dict[str, Work]:
     """{doi: Work} for the (normalized) DOIs OpenAlex knows. Unknown DOIs are left out."""
+    return _lookup_many(
+        con, http, dois,
+        filter_field="doi",
+        single_id=lambda doi: f"doi:{doi}",
+        key_of=lambda data: normalize_doi(data.get("doi")),
+    )
+
+
+def lookup_openalex_ids(
+    con: duckdb.DuckDBPyConnection, http: httpx.Client, openalex_ids: list[str]
+) -> dict[str, Work]:
+    """{'W123': Work} for OpenAlex IDs (e.g. a reference list). Unknown IDs are left out."""
+    return _lookup_many(
+        con, http, openalex_ids,
+        filter_field="openalex",
+        single_id=lambda openalex_id: openalex_id,
+        key_of=lambda data: _short_id(data["id"]),
+    )
+
+
+def _lookup_many(
+    con: duckdb.DuckDBPyConnection,
+    http: httpx.Client,
+    ids: list[str],
+    filter_field: str,
+    single_id: Callable[[str], str],
+    key_of: Callable[[dict[str, Any]], str | None],
+) -> dict[str, Work]:
+    """Look up many works by one kind of id: cache first, then batches of 100.
+
+    Each id's result is cached under its *single* lookup URL ('/works/doi:...', '/works/W1'),
+    whichever way it was fetched, so later runs find it however they ask.
+    """
     found: dict[str, Work] = {}
     missing: list[str] = []
-    for doi in dict.fromkeys(dois):  # dedupe, keep order
-        hit = _cache_get(con, _single_url(f"doi:{doi}"))
+    for id_ in dict.fromkeys(ids):  # dedupe, keep order
+        hit = _cache_get(con, _single_url(single_id(id_)))
         if hit is _MISS:
-            missing.append(doi)
+            missing.append(id_)
         elif hit is not None:
-            found[doi] = _to_work(hit)
+            found[id_] = _to_work(hit)
 
-    # ',' and '|' are separators in OpenAlex filter syntax: such DOIs go one by one.
-    # So does a lone DOI: a single-record lookup is free, a filter call is billed.
-    batchable = [d for d in missing if "," not in d and "|" not in d]
+    # ',' and '|' are separators in OpenAlex filter syntax: such ids go one by one.
+    # So does a lone id: a single-record lookup is free, a filter call is billed.
+    batchable = [i for i in missing if "," not in i and "|" not in i]
     if len(batchable) == 1:
         batchable = []
     for start in range(0, len(batchable), BATCH_SIZE):
         chunk = batchable[start:start + BATCH_SIZE]
         page = _request(http, "/works", {
-            "filter": "doi:" + "|".join(chunk), "per_page": str(BATCH_SIZE), "select": SELECT,
+            "filter": f"{filter_field}:" + "|".join(chunk), "per_page": str(BATCH_SIZE), "select": SELECT,
         })
-        by_doi = {normalize_doi(w["doi"]): w for w in page["results"] if w.get("doi")}
-        for doi in chunk:
-            data = by_doi.get(doi)
-            _cache_put(con, _single_url(f"doi:{doi}"), data)  # also caches "not found"
+        by_key = {key_of(w): w for w in page["results"]}
+        for id_ in chunk:
+            data = by_key.get(id_)
+            _cache_put(con, _single_url(single_id(id_)), data)  # also caches "not found"
             if data:
-                found[doi] = _to_work(data)
+                found[id_] = _to_work(data)
 
-    for doi in missing:
-        if doi not in batchable and (data := _get_single(con, http, f"doi:{doi}")):
-            found[doi] = _to_work(data)
+    for id_ in missing:
+        if id_ not in batchable and (data := _get_single(con, http, single_id(id_))):
+            found[id_] = _to_work(data)
     return found
 
 
@@ -241,14 +281,20 @@ def _to_work(data: dict[str, Any]) -> Work:
     return Work(
         doi=normalize_doi(data.get("doi")),
         pmid=pmid_url.rstrip("/").rsplit("/", 1)[-1] if pmid_url else None,
-        openalex_id=data["id"].rsplit("/", 1)[-1],  # 'https://openalex.org/W123' -> 'W123'
+        openalex_id=_short_id(data["id"]),
         title=data.get("title") or data.get("display_name"),
         venue=source.get("display_name"),
         year=data.get("publication_year"),
         # A retraction notice is not itself retracted, whatever OpenAlex's flag says.
         is_retracted=False if is_notice else data.get("is_retracted"),
         is_retraction_notice=is_notice,
+        referenced_works=tuple(_short_id(r) for r in data.get("referenced_works") or ()),
     )
+
+
+def _short_id(url: str) -> str:
+    """'https://openalex.org/W123' -> 'W123'."""
+    return url.rsplit("/", 1)[-1]
 
 
 def _merge(cited: Work, found: Work) -> Work:
@@ -263,6 +309,7 @@ def _merge(cited: Work, found: Work) -> Work:
         year=cited.year or found.year,
         is_retracted=found.is_retracted,
         is_retraction_notice=found.is_retraction_notice,
+        referenced_works=found.referenced_works,
     )
 
 

@@ -1,68 +1,13 @@
 import json
-import re
 from pathlib import Path
-from urllib.parse import unquote
 
 import httpx
 import pytest
 
+from fake_openalex import KEY, FakeOpenAlex, oa_work as _oa_work
 from zombiepapers import db
 from zombiepapers.models import Work
 from zombiepapers.sources import openalex
-
-KEY = "secret-test-key"
-
-
-def _oa_work(n: int, doi: str | None, title: str, year: int = 2020, retracted: bool = False,
-             pmid: str | None = None) -> dict:
-    return {
-        "id": f"https://openalex.org/W{n}",
-        "doi": f"https://doi.org/{doi.upper()}" if doi else None,  # OpenAlex style: URL form
-        "ids": {"pmid": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}"} if pmid else {},
-        "title": title,
-        "display_name": title,
-        "publication_year": year,
-        "primary_location": {"source": {"display_name": "Journal of Tests"}},
-        "is_retracted": retracted,
-    }
-
-
-class FakeOpenAlex:
-    """Answers like the OpenAlex API from an in-memory list of works; records every request."""
-
-    def __init__(self, works: list[dict]) -> None:
-        self.works = works
-        self.requests: list[httpx.Request] = []
-        self.fail_next: list[int] = []  # status codes to return before answering normally
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        assert request.url.params.get("api_key") == KEY
-        if self.fail_next:
-            return httpx.Response(self.fail_next.pop(0))
-        path = unquote(request.url.path)
-        if path.startswith("/works/doi:"):
-            return self._single(lambda w: w["doi"] and w["doi"].lower().endswith(path[len("/works/doi:"):]))
-        if path.startswith("/works/pmid:"):
-            pmid = path[len("/works/pmid:"):]
-            return self._single(lambda w: w["ids"].get("pmid", "").endswith("/" + pmid))
-        if path == "/works" and "filter" in request.url.params:
-            wanted = request.url.params["filter"].removeprefix("doi:").split("|")
-            results = [w for w in self.works if w["doi"] and w["doi"].lower().split("doi.org/")[1] in wanted]
-            return httpx.Response(200, json={"results": results})
-        if path == "/works" and "search" in request.url.params:
-            words = set(re.findall(r"\w+", request.url.params["search"].lower()))
-            results = [w for w in self.works if words & set(re.findall(r"\w+", w["title"].lower()))]
-            return httpx.Response(200, json={"results": results})
-        return httpx.Response(400)
-
-    def _single(self, match) -> httpx.Response:
-        found = [w for w in self.works if match(w)]
-        return httpx.Response(200, json=found[0]) if found else httpx.Response(404)
-
-    def client(self) -> httpx.Client:
-        return httpx.Client(base_url=openalex.BASE_URL, transport=httpx.MockTransport(self.handler))
-
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch: pytest.MonkeyPatch) -> list[float]:
@@ -259,3 +204,22 @@ def test_retraction_notice_is_not_itself_retracted(con) -> None:
     assert found.is_retraction_notice is True
     assert found.is_retracted is False
     assert "type" in fake.requests[0].url.params["select"].split(",")
+
+
+def test_lookup_openalex_ids_batches_and_caches(con) -> None:
+    fake = FakeOpenAlex([_oa_work(1, "10.1/a", "A", cites=(2, 3)), _oa_work(2, "10.1/b", "B"),
+                         _oa_work(3, None, "C")])
+    found = openalex.lookup_openalex_ids(con, fake.client(), ["W1", "W2", "W3", "W404"])
+    assert set(found) == {"W1", "W2", "W3"}
+    assert found["W1"].referenced_works == ("W2", "W3")
+    assert fake.requests[0].url.params["filter"] == "openalex:W1|W2|W3|W404"
+    assert len(fake.requests) == 1
+
+    again = openalex.lookup_openalex_ids(con, fake.client(), ["W1", "W404"])
+    assert set(again) == {"W1"} and len(fake.requests) == 1  # all from cache, "not found" too
+
+
+def test_lone_openalex_id_uses_free_single_lookup(con) -> None:
+    fake = FakeOpenAlex([_oa_work(7, "10.1/x", "X")])
+    assert openalex.lookup_openalex_ids(con, fake.client(), ["W7"])["W7"].doi == "10.1/x"
+    assert fake.requests[0].url.path == "/works/W7"

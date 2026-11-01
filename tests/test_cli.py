@@ -102,3 +102,15 @@ def test_check_doi_rejects_non_doi(tmp_path: Path) -> None:
     result = runner.invoke(app, ["check-doi", "not-a-doi", "--db", str(tmp_path / "x.duckdb")])
     assert result.exit_code == 2
     assert "not a DOI" in result.output
+
+
+def test_check_depth_without_key_exits_78(rw_db, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv(openalex.API_KEY_ENV, raising=False)
+    db_path = _db_with_data(rw_db, tmp_path)
+    result = runner.invoke(app, ["check-doi", "10.1000/abc.1", "--depth", "1", "--db", str(db_path)])
+    assert result.exit_code == 78 and openalex.API_KEY_ENV in result.output
+
+
+def test_check_depth_2_is_wrong_usage(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["check-doi", "10.1000/abc.1", "--depth", "2"])
+    assert result.exit_code == 2
