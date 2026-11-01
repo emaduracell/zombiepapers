@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "duckdb",
+    "numpy",  # required by DuckDB for Python functions called from SQL (create_function)
     "httpx",
     "bibtexparser>=1.4,<2",
     "typer",

@@ -1,0 +1,75 @@
+% Hand-made sample covering the messy ways DOIs and PubMed IDs appear in real .bib files.
+
+@string{nat = "Nature"}
+
+@article{plain,
+  title   = {A plain entry},
+  author  = {Rossi, Mario},
+  journal = nat,
+  year    = {2019},
+  doi     = {10.1000/abc.1}
+}
+
+@article{upper_url_doi,
+  title   = {{DNA} Repair in {\"U}lm:
+             a Multi-line Title},
+  journal = {Journal of Things},
+  year    = 2021,
+  doi     = {https://doi.org/10.1000/ABC.2}
+}
+
+@article{doi_prefix_spaces,
+  title = "Prefixed and padded",
+  year  = {2020},
+  doi   = {  doi:10.1000/Abc.3  }
+}
+
+@inproceedings{escaped_underscore,
+  title     = {Escaped underscore},
+  booktitle = {Proceedings of the Conference},
+  year      = {2018},
+  doi       = {10.1000/abc\_4}
+}
+
+@article{encoded_sici,
+  title = {An old-style DOI},
+  year  = {2000},
+  doi   = {10.1002/1096-9098(200007)74:3%3C201::AID-JSO8%3E3.0.CO;2-5}
+}
+
+@misc{doi_in_url,
+  title = {Only a doi.org link},
+  url   = {http://dx.doi.org/10.1000/ABC.5},
+  year  = {2022}
+}
+
+@article{publisher_url,
+  title = {Publisher page, not mined},
+  url   = {https://onlinelibrary.wiley.com/doi/10.1000/abc.6/abstract},
+  year  = {2017}
+}
+
+@article{pmid_field,
+  title   = {Has a pmid field},
+  journal = {Journal of Medicine},
+  year    = {2015},
+  pmid    = {123456}
+}
+
+@article{pmid_in_note,
+  title = {PMID only in the note},
+  year  = {2016},
+  note  = {PMID: 654321}
+}
+
+@article{junk_doi,
+  title = {Junk in the doi field},
+  year  = {2014},
+  doi   = {unavailable}
+}
+
+@book{no_ids,
+  title     = {A Book Without Identifiers},
+  publisher = {Some Press},
+  year      = {c. 1999}
+}

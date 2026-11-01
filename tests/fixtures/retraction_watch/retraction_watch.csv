@@ -1,0 +1,6 @@
+Record ID,Title,Subject,Institution,Journal,Publisher,Country,Author,URLS,ArticleType,RetractionDate,RetractionDOI,RetractionPubMedID,OriginalPaperDate,OriginalPaperDOI,OriginalPaperPubMedID,RetractionNature,Reason,Paywalled,Notes,
+1,"Paper A, with a comma",(BLS) Biology;,University X;,Journal A,Publisher A,Italy;,Rossi M;Bianchi L;,https://retractionwatch.com/a/;,Research Article;,3/15/2021 0:00,10.1000/NOTICE.1,0,1/15/2019 0:00,10.1000/ABC.1,0,Retraction,+Falsification/Fabrication of Data;Duplication of/in Image;,No,,
+2,Paper A,(BLS) Biology;,University X;,Journal A,Publisher A,Italy;,Rossi M;,,Research Article;,6/1/2020 0:00,unavailable,,1/15/2019 0:00,10.1000/abc.1,123,Correction,Error in Data;Error in Data;,No,See also: https://pubpeer.com/publications/X,
+3,Paper B,,,Journal B,Publisher B,,,,Research Article;,12/24/2024 0:00,Unavailable,0,8/6/2019 0:00,Unavailable,555,Expression of concern,Investigation by Journal/Publisher;,Unknown,,
+4,Paper C,,,Proceedings C,Publisher C,,,,Conference Abstract/Paper;,7/19/2023 0:00,,,6/8/2022 0:00,,0,Retraction,Paper Mill;,Yes,,
+5,Paper D,,,Journal D,Wiley,,,,Research Article;,10/17/2023 0:00,10.1002/notice.5,,12/7/2001 0:00,10.1002/(SICI)1521-3951(199905)213:1%3c153::AID-PSSB153%3e3.0.CO;2-1,,Reinstatement,Upgrade/Update of Prior Notice(s);,No,,
