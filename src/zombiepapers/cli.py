@@ -7,8 +7,10 @@ from rich.console import Console
 
 from zombiepapers import check, db
 from zombiepapers.explain import taxonomy
+from zombiepapers.models import Work
 from zombiepapers.report import json_report, terminal
 from zombiepapers.resolve.bib import parse_bib
+from zombiepapers.resolve.doi import normalize_doi
 from zombiepapers.sources import openalex, retraction_watch
 
 app = typer.Typer(help="Check a bibliography for retracted, corrected, or flagged papers.")
@@ -167,10 +169,34 @@ def check_command(
     75 incomplete, retry later (OpenAlex temporarily unavailable);
     78 fix something first (no data ingested, OpenAlex refused the request).
     """
+    _run_check(parse_bib(bib_path), as_json, db_path)
+
+
+@app.command("check-doi")
+def check_doi_command(
+    dois: list[str] = typer.Argument(
+        ..., help="One or more DOIs, in any form: 10.1234/abc, doi:10.1234/abc, https://doi.org/10.1234/abc."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON instead of a table."),
+    db_path: Path = typer.Option(db.DEFAULT_DB_PATH, "--db", help="Database file."),
+) -> None:
+    """Check one or more DOIs. Same report and exit codes as `check`."""
+    works = {}
+    for raw in dois:
+        doi = normalize_doi(raw)
+        if doi is None:
+            typer.echo(f"error: not a DOI: {raw!r} (a DOI starts with '10.')", err=True)
+            raise typer.Exit(2)
+        works[doi] = Work(doi=doi)
+    _run_check(works, as_json, db_path)
+
+
+def _run_check(works: dict[str, Work], as_json: bool, db_path: Path) -> None:
+    """Shared by check and check-doi: run the check, render it, exit with its code."""
     con = db.connect(db_path)
     try:
         with openalex.make_client() as http:
-            findings, warnings, problem = check.check(con, bib_path, http)
+            findings, warnings, problem = check.check_works(con, works, http)
     except check.CheckError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(check.EXIT_CONFIG)

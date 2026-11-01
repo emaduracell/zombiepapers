@@ -118,9 +118,17 @@ def test_second_run_uses_cache_without_network_or_key(con, fake, monkeypatch) ->
 
 
 def test_changed_bib_only_fetches_new_dois(con, fake) -> None:
-    openalex.lookup_dois(con, fake.client(), ["10.1000/abc.1"])
     openalex.lookup_dois(con, fake.client(), ["10.1000/abc.1", "10.1000/abc.2"])
-    assert fake.requests[1].url.params["filter"] == "doi:10.1000/abc.2"
+    openalex.lookup_dois(con, fake.client(), ["10.1000/abc.1", "10.1000/abc.2", "10.1000/abc.3", "10.9/new"])
+    assert fake.requests[1].url.params["filter"] == "doi:10.1000/abc.3|10.9/new"
+
+
+def test_lone_doi_uses_free_single_lookup(con, fake) -> None:
+    found = openalex.lookup_dois(con, fake.client(), ["10.1000/abc.1"])
+    assert found["10.1000/abc.1"].openalex_id == "W1"
+    (request,) = fake.requests
+    assert request.url.path == "/works/doi:10.1000/abc.1"
+    assert "filter" not in request.url.params
 
 
 def test_key_never_stored(con, fake) -> None:
@@ -149,7 +157,7 @@ def test_honours_retry_after(con, env) -> None:
         calls.append(request)
         if len(calls) == 1:
             return httpx.Response(429, headers={"Retry-After": "7"})
-        return httpx.Response(200, json={"results": []})
+        return httpx.Response(404)  # single lookup: not found
 
     http = httpx.Client(base_url=openalex.BASE_URL, transport=httpx.MockTransport(handler))
     openalex.lookup_dois(con, http, ["10.1/x"])

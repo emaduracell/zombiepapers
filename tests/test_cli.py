@@ -68,3 +68,37 @@ def test_check_exits_75_when_openalex_is_down_and_nothing_flagged(
     result = runner.invoke(app, ["check", str(bib), "--db", str(db_path)])
     assert result.exit_code == 75
     assert "unavailable after 5 attempts" in result.output
+
+
+def test_check_doi_flags_retracted_doi(rw_db, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv(openalex.API_KEY_ENV, raising=False)
+    db_path = _db_with_data(rw_db, tmp_path)
+    result = runner.invoke(app, ["check-doi", "https://doi.org/10.1000/ABC.1", "--db", str(db_path)])
+    assert result.exit_code == 1
+    assert "10.1000/abc.1" in result.output and "RETRACTED" in result.output
+
+
+def test_check_doi_several_and_json(rw_db, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv(openalex.API_KEY_ENV, raising=False)
+    db_path = _db_with_data(rw_db, tmp_path)
+    result = runner.invoke(
+        app, ["check-doi", "doi:10.1000/abc.1", "10.9999/fine", "--json", "--db", str(db_path)]
+    )
+    assert result.exit_code == 1
+    data = json.loads(result.stdout)
+    assert [(f["bib_key"], f["status"]) for f in data["findings"]] == [
+        ("10.1000/abc.1", "retracted"), ("10.9999/fine", "ok"),
+    ]
+
+
+def test_check_doi_clean_exits_0(rw_db, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv(openalex.API_KEY_ENV, raising=False)
+    db_path = _db_with_data(rw_db, tmp_path)
+    result = runner.invoke(app, ["check-doi", "10.9999/fine", "--db", str(db_path)])
+    assert result.exit_code == 0
+
+
+def test_check_doi_rejects_non_doi(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["check-doi", "not-a-doi", "--db", str(tmp_path / "x.duckdb")])
+    assert result.exit_code == 2
+    assert "not a DOI" in result.output

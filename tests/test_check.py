@@ -140,3 +140,8 @@ def test_missing_key_is_offline(rw_db, monkeypatch) -> None:
     monkeypatch.delenv(openalex.API_KEY_ENV, raising=False)
     _, warnings, problem = check.check(rw_db, BIB, openalex.make_client())
     assert problem == openalex.OFFLINE and "not set" in warnings[0]
+
+
+def test_check_works_accepts_works_directly(rw_db) -> None:
+    findings, _, _ = check.check_works(rw_db, {"x": Work(doi="10.1000/abc.1"), "y": Work(pmid="555")})
+    assert [(f.bib_key, f.status) for f in findings] == [("x", "retracted"), ("y", "expression_of_concern")]

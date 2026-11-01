@@ -5,8 +5,9 @@ repeated run makes no network calls and needs no key. The key is read from the
 OPENALEX_API_KEY environment variable only when a request is actually sent.
 
 Cost: single-record lookups (/works/doi:..., /works/pmid:...) are free; filter and
-search calls are billed. DOIs are looked up 100 at a time with one filter call, and
-each DOI's result is cached separately, so a changed .bib only fetches the new DOIs.
+search calls are billed. DOIs are looked up 100 at a time with one filter call (a lone
+DOI with a free single lookup), and each DOI's result is cached separately, so a
+changed .bib only fetches the new DOIs.
 """
 
 import json
@@ -94,7 +95,10 @@ def lookup_dois(
             found[doi] = _to_work(hit)
 
     # ',' and '|' are separators in OpenAlex filter syntax: such DOIs go one by one.
+    # So does a lone DOI: a single-record lookup is free, a filter call is billed.
     batchable = [d for d in missing if "," not in d and "|" not in d]
+    if len(batchable) == 1:
+        batchable = []
     for start in range(0, len(batchable), BATCH_SIZE):
         chunk = batchable[start:start + BATCH_SIZE]
         page = _request(http, "/works", {

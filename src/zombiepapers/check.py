@@ -31,11 +31,21 @@ def check(
     http: httpx.Client | None = None,
     explainer: Explainer | None = None,
 ) -> tuple[list[Finding], list[str], str | None]:
-    """Check every entry of a .bib.
+    """Check every entry of a .bib. See check_works."""
+    return check_works(con, parse_bib(bib_path), http, explainer)
 
-    Returns (one Finding per entry in file order, warnings, OpenAlex problem).
-    With `http`, entries are completed by OpenAlex first. If OpenAlex fails, the check
-    still runs on what the .bib says, with a warning; the problem is the failure's kind
+
+def check_works(
+    con: duckdb.DuckDBPyConnection,
+    works: dict[str, Work],
+    http: httpx.Client | None = None,
+    explainer: Explainer | None = None,
+) -> tuple[list[Finding], list[str], str | None]:
+    """Check works given as {key: Work}: a parsed .bib, or DOIs typed by the user.
+
+    Returns (one Finding per work, in order; warnings; OpenAlex problem).
+    With `http`, works are completed by OpenAlex first. If OpenAlex fails, the check
+    still runs on what was given, with a warning; the problem is the failure's kind
     ('offline' | 'permanent' | 'transient', see OpenAlexError), else None.
     """
     _require_data(con)
@@ -43,7 +53,6 @@ def check(
         taxonomy.load_taxonomy(con)
     explainer = explainer or RuleExplainer(con)
 
-    works = parse_bib(bib_path)
     warnings: list[str] = []
     problem = None
     if http is not None:
