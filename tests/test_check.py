@@ -145,3 +145,10 @@ def test_missing_key_is_offline(rw_db, monkeypatch) -> None:
 def test_check_works_accepts_works_directly(rw_db) -> None:
     findings, _, _ = check.check_works(rw_db, {"x": Work(doi="10.1000/abc.1"), "y": Work(pmid="555")})
     assert [(f.bib_key, f.status) for f in findings] == [("x", "retracted"), ("y", "expression_of_concern")]
+
+
+def test_retraction_notice_is_not_flagged(rw_db) -> None:
+    notice = Work(doi="10.9999/notice", is_retraction_notice=True)
+    findings, _, _ = check.check_works(rw_db, {"n": notice})
+    assert findings[0].status == "retraction_notice" and not findings[0].flagged
+    assert findings[0].assessments == ()

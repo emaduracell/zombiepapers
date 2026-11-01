@@ -4,6 +4,7 @@ from pathlib import Path
 from rich.console import Console
 
 from zombiepapers import check
+from zombiepapers.models import Work
 from zombiepapers.report import json_report, terminal
 
 BIB = Path(__file__).parent / "fixtures" / "check.bib"
@@ -49,3 +50,11 @@ def test_json_report(rw_db) -> None:
     assert first["notices"][0]["link"] == "https://doi.org/10.1000/notice.1"
     assert first["assessments"][0]["tier"] == "integrity"
     assert first["assessments"][0]["method"] == "rules"
+
+
+def test_terminal_lists_retraction_notices_outside_the_table(rw_db) -> None:
+    findings, _, _ = check.check_works(rw_db, {"cited_notice": Work(doi="10.9/n", is_retraction_notice=True)})
+    out = _render(findings, [])
+    assert "No retracted, corrected or flagged papers among 1 entries." in out
+    assert "Retraction notices (citing them is fine): cited_notice" in out
+    assert out.strip().endswith("1 entries: 1 retraction notice")

@@ -11,14 +11,16 @@ from zombiepapers.models import Finding
 # status -> (label, style), in the order rows and the summary are shown.
 STATUS_LABELS = {
     "retracted": ("RETRACTED", "bold red"),
-    "openalex_retracted": ("RETRACTED?", "red"),
+    "openalex_retracted": ("RETRACTED (OpenAlex)", "red"),
     "expression_of_concern": ("CONCERN", "bold yellow"),
     "corrected": ("corrected", "cyan"),
     "reinstated": ("reinstated", "green"),
+    "retraction_notice": ("retraction notice", "green"),
     "ok": ("ok", "green"),
     "unresolved": ("not checked", "dim"),
 }
 _ORDER = list(STATUS_LABELS)
+_NOT_IN_TABLE = ("retraction_notice", "ok", "unresolved")  # nothing wrong to explain
 
 
 def render(findings: list[Finding], warnings: list[str], console: Console) -> None:
@@ -26,7 +28,7 @@ def render(findings: list[Finding], warnings: list[str], console: Console) -> No
         console.print(f"[yellow]warning:[/] {warning}")
 
     shown = sorted(
-        (f for f in findings if f.status not in ("ok", "unresolved")),
+        (f for f in findings if f.status not in _NOT_IN_TABLE),
         key=lambda f: _ORDER.index(f.status),
     )
     if shown:
@@ -34,6 +36,9 @@ def render(findings: list[Finding], warnings: list[str], console: Console) -> No
     else:
         console.print(f"No retracted, corrected or flagged papers among {len(findings)} entries.")
 
+    notices = [f.bib_key for f in findings if f.status == "retraction_notice"]
+    if notices:
+        console.print(f"[dim]Retraction notices (citing them is fine): {', '.join(notices)}[/]")
     unresolved = [f.bib_key for f in findings if f.status == "unresolved"]
     if unresolved:
         console.print(f"[dim]Not checked (no DOI or PubMed ID found): {', '.join(unresolved)}[/]")

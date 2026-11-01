@@ -154,6 +154,8 @@ def resolve(
         else:
             via = "bib+openalex"
         retracted = {True: "RETRACTED", False: "", None: "?"}[work.is_retracted]
+        if work.is_retraction_notice:
+            retracted = "retraction notice"
         typer.echo(f"{key:<24} {via:<13} {str(work.work_id):<45} {work.openalex_id or '':<12} {retracted}")
 
 

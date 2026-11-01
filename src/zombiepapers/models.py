@@ -19,6 +19,9 @@ class Work:
     venue: str | None = None  # journal or conference
     year: int | None = None
     is_retracted: bool | None = None  # OpenAlex's flag (a second signal); None = unknown
+    # OpenAlex type 'retraction': this is a retraction *notice*, not a research paper.
+    # Citing a notice is fine; OpenAlex often sets is_retracted on notices too.
+    is_retraction_notice: bool = False
 
     @property
     def work_id(self) -> str | None:
@@ -68,7 +71,8 @@ class Finding:
     bib_key: str
     work: Work  # as cited, completed by OpenAlex
     # 'retracted' | 'expression_of_concern' | 'openalex_retracted' | 'corrected' |
-    # 'reinstated' | 'ok' | 'unresolved' (no DOI/PMID, so it could not be checked)
+    # 'reinstated' | 'retraction_notice' | 'ok' |
+    # 'unresolved' (no DOI/PMID, so it could not be checked)
     status: str
     notices: tuple[Notice, ...] = ()  # newest first
     assessments: tuple[Assessment, ...] = ()  # one per notice, same order

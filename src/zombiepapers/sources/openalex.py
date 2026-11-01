@@ -31,7 +31,7 @@ MAX_ATTEMPTS = 5
 # Like HTTP itself: 429 and 5xx are temporary (retry), any other 4xx is permanent.
 OFFLINE, PERMANENT, TRANSIENT = "offline", "permanent", "transient"
 # Only the fields we use: smaller responses and a smaller cache.
-SELECT = "id,doi,ids,title,display_name,publication_year,primary_location,is_retracted"
+SELECT = "id,doi,ids,title,display_name,publication_year,primary_location,is_retracted,type"
 
 
 class OpenAlexError(Exception):
@@ -235,6 +235,7 @@ def _request(
 
 
 def _to_work(data: dict[str, Any]) -> Work:
+    is_notice = data.get("type") == "retraction"
     source = (data.get("primary_location") or {}).get("source") or {}
     pmid_url = (data.get("ids") or {}).get("pmid")  # 'https://pubmed.ncbi.nlm.nih.gov/123'
     return Work(
@@ -244,7 +245,9 @@ def _to_work(data: dict[str, Any]) -> Work:
         title=data.get("title") or data.get("display_name"),
         venue=source.get("display_name"),
         year=data.get("publication_year"),
-        is_retracted=data.get("is_retracted"),
+        # A retraction notice is not itself retracted, whatever OpenAlex's flag says.
+        is_retracted=False if is_notice else data.get("is_retracted"),
+        is_retraction_notice=is_notice,
     )
 
 
@@ -259,6 +262,7 @@ def _merge(cited: Work, found: Work) -> Work:
         venue=cited.venue or found.venue,
         year=cited.year or found.year,
         is_retracted=found.is_retracted,
+        is_retraction_notice=found.is_retraction_notice,
     )
 
 

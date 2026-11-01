@@ -248,3 +248,14 @@ def test_cache_stores_not_found_as_null(con, fake) -> None:
     openalex.lookup_dois(con, fake.client(), ["10.9/none"])
     (stored,) = con.execute("SELECT json FROM api_cache").fetchall()[0]
     assert json.loads(stored) is None
+
+
+def test_retraction_notice_is_not_itself_retracted(con) -> None:
+    # OpenAlex often sets is_retracted on the notice as well as on the retracted paper.
+    notice = {**_oa_work(9, "10.1000/notice.9", "Retraction: Some paper", retracted=True),
+              "type": "retraction"}
+    fake = FakeOpenAlex([notice])
+    found = openalex.lookup_dois(con, fake.client(), ["10.1000/notice.9"])["10.1000/notice.9"]
+    assert found.is_retraction_notice is True
+    assert found.is_retracted is False
+    assert "type" in fake.requests[0].url.params["select"].split(",")

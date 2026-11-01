@@ -108,6 +108,8 @@ def status(work: Work, notices: tuple[Notice, ...]) -> str:
         return "corrected"
     if "Reinstatement" in latest:
         return "reinstated"
+    if work.is_retraction_notice:
+        return "retraction_notice"
     if work.is_retracted:
         return "openalex_retracted"
     return "ok" if work.work_id else "unresolved"
